@@ -41,6 +41,12 @@ interface ValidationDlqMessage {
   originalMessage: Record<string, unknown>;
 }
 
+/** Wiadomość na DLQ, gdy poprawny JSON nie jest obiektem (`null`, liczba, string, tablica). */
+interface NotAnObjectDlqMessage {
+  error: "Wiadomość musi być obiektem JSON.";
+  originalMessage: unknown;
+}
+
 /**
  * Okno asercji negatywnej („wiadomość NIE pojawiła się”). Sprawdzamy dopiero
  * po dotarciu wyniku na właściwy topic — `consumer` publikuje jeden wynik na
@@ -60,7 +66,7 @@ const FLOW_READY_TIMEOUT_SECONDS = 60;
 
 const hasOrderId = (orderId: string) => (value: Partial<Order>) => value.orderId === orderId;
 
-const isDlqOf = (payload: object) => (value: Partial<ValidationDlqMessage>) =>
+const isDlqOf = (payload: unknown) => (value: { originalMessage?: unknown }) =>
   isDeepStrictEqual(value.originalMessage, payload);
 
 /** Poprawne zamówienie z unikalnym także `customer` — da się je odnaleźć nawet bez `orderId`. */
@@ -219,6 +225,37 @@ describe("Przepływ przetwarzania zamówień przez Kafkę", () => {
         expect(await waitForMessage(ORDERS_PROCESSED_TOPIC, hasOrderId(orderId), ABSENCE_WINDOW_SECONDS)).toBeNull();
       },
       TWO_WAITS_TEST_TIMEOUT_MS
+    );
+  });
+
+  describe("JSON, który nie jest obiektem", () => {
+    it.each([
+      { type: "string", makePayload: (marker: string): unknown => marker },
+      { type: "tablica", makePayload: (marker: string): unknown => [marker] },
+    ])("$type trafia na orders-dlq z komunikatem, że wiadomość musi być obiektem", async ({ makePayload }) => {
+      const payload = makePayload(randomUUID());
+
+      await sendRaw(producer, JSON.stringify(payload));
+
+      const dlqMessage: NotAnObjectDlqMessage | null = await waitForMessage(ORDERS_DLQ_TOPIC, isDlqOf(payload));
+      expect(dlqMessage).toStrictEqual({ error: "Wiadomość musi być obiektem JSON.", originalMessage: payload });
+    });
+
+    /**
+     * Regresja O2: przed fixem taki payload powodował crash `consumer`a i wstrzymywał
+     * wszystkie partycje. Ten sam key = ta sama partycja, więc zamówienie jest
+     * przetwarzane dopiero po złej wiadomości.
+     */
+    it.each(["null", "123", "true", '"abc"', "[1, 2]"])(
+      "payload %s nie blokuje kolejnego zamówienia z tym samym kluczem",
+      async (raw) => {
+        const order = makeTestOrder();
+
+        await sendRaw(producer, raw, order.orderId);
+        await sendOrder(producer, order);
+
+        expect(await waitForProcessed(order.orderId)).toStrictEqual({ ...order, status: "PROCESSED" });
+      }
     );
   });
 
