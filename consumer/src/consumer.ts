@@ -35,14 +35,12 @@ const NOT_AN_OBJECT_ERROR = "Wiadomość musi być obiektem JSON.";
 /**
  * Czy sparsowany JSON jest obiektem (a nie `null`, prymitywem ani tablicą).
  *
- * Fix: `JSON.parse` zwraca dowolną wartość JSON, a wynik był przypisywany
- * do `Record<string, unknown>` bez sprawdzenia. Dla payloadu `null`, `123` czy
- * `"abc"` operator `in` w `validate()` rzucał `TypeError` w `eachMessage` —
- * kafkajs nie restartuje `consumer`a po takim błędzie (patrz
- * `exitOnFatalCrash`), więc jedna wiadomość zatrzymywała przetwarzanie
- * wszystkich partycji. Teraz taka wiadomość trafia
- * na DLQ z błędem `NOT_AN_OBJECT_ERROR`; tablice traktujemy tak samo (wcześniej
- * dawały mylące „Brakujące pola”).
+ * Fix: wynik `JSON.parse` trafiał do `validate()` bez sprawdzenia typu. Dla
+ * payloadu `null`, `123` czy `"abc"` operator `in` rzucał `TypeError`, po którym
+ * kafkajs nie restartuje `consumer`a (patrz `exitOnFatalCrash`), więc jedna
+ * wiadomość zatrzymywała wszystkie partycje. Teraz taka wiadomość trafia na DLQ
+ * z błędem `NOT_AN_OBJECT_ERROR`. Tablica też, bo wcześniej dawała mylące
+ * „Brakujące pola”.
  */
 function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -67,9 +65,8 @@ function validate(order: Record<string, unknown>): string[] {
 }
 
 /**
- * Pierwotny błąd. kafkajs opakowuje wyjątek z `eachMessage` w swój błąd
- * (`cause`), którego stack wskazuje tylko na `kafkajs/src/retry`, a nie na
- * miejsce w naszym kodzie.
+ * Zwraca pierwotny błąd. kafkajs opakowuje wyjątek z `eachMessage` we własny
+ * (`cause`), a stack wrappera wskazuje tylko na `kafkajs/src/retry`.
  */
 function rootCause(error: Error): Error {
   return "cause" in error && error.cause instanceof Error ? rootCause(error.cause) : error;
@@ -78,16 +75,13 @@ function rootCause(error: Error): Error {
 /**
  * Loguje crash `consumer`a i kończy proces, gdy kafkajs nie planuje restartu.
  *
- * Fix: wyjątek z `eachMessage` typu `TypeError`, `RangeError`,
- * `ReferenceError` lub `SyntaxError` kafkajs uznaje za nienaprawialny: nie
- * ponawia przetwarzania, rozłącza `consumer`a (`LeaveGroup`) i nie restartuje
- * go (`restart: false`). Proces działał dalej (połączenie producenta trzyma
- * event loop), więc kontener był `Up`, logi puste (`logLevel.NOTHING`, brak
- * listenera), a żadna partycja nie była przetwarzana — tak kończył się
- * payload `null` przed `isJsonObject`.
- * Teraz każdy crash jest logowany, a przy `restart: false` proces kończy się
- * kodem 1, więc Docker (`restart: unless-stopped`) uruchamia `consumer`a
- * ponownie.
+ * Fix: `TypeError`, `RangeError`, `ReferenceError` i `SyntaxError` z
+ * `eachMessage` kafkajs uznaje za nienaprawialne. Nie ponawia przetwarzania,
+ * rozłącza `consumer`a i go nie restartuje (`restart: false`). Proces działał
+ * dalej (połączenie producenta trzyma event loop), kontener był `Up`, logi
+ * puste, a żadna partycja nie była przetwarzana. Tak kończył się payload `null`
+ * przed `isJsonObject`. Teraz każdy crash trafia do logu, a przy
+ * `restart: false` proces kończy się kodem 1 i Docker uruchamia go ponownie.
  */
 function exitOnFatalCrash(consumer: Consumer): void {
   consumer.on(consumer.events.CRASH, ({ payload }) => {

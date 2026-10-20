@@ -127,14 +127,13 @@ function tryParse(value: Buffer | null): any | null {
  * Czeka aż w danym topicu pojawi się wiadomość spełniająca matchFn(value) -> boolean.
  * Zwraca sparsowaną wiadomość albo null, jeśli nie znaleziono w limicie czasu.
  *
- * Fix (deadlock): oryginalnie po dopasowaniu `eachMessage` wywoływał
+ * Fix (deadlock): po dopasowaniu `eachMessage` wywoływał
  * `await consumer.disconnect()`, a `resolve` dopiero po nim. `disconnect()`
- * w kafkajs czeka na zakończenie bieżącego `eachMessage`, który czekał na
- * `disconnect()` — Promise nigdy się nie rozwiązywał, timer też nie pomagał
- * (`settled` było już ustawione), test wisiał do limitu Jest, a consumer
- * zostawał podłączony. Teraz `eachMessage` tylko rozwiązuje Promise, a
- * `disconnect()` jest w `finally` po wyjściu z handlera — także gdy `run()`
- * rzuci błąd.
+ * czeka na zakończenie `eachMessage`, więc oba czekały na siebie. Promise się
+ * nie rozwiązywał, timer nie pomagał (`settled` było już ustawione), test
+ * wisiał do limitu Jest, a consumer zostawał podłączony. Teraz `eachMessage`
+ * tylko rozwiązuje Promise, a `disconnect()` jest w `finally`, także gdy
+ * `run()` rzuci błąd.
  */
 export async function waitForMessage(
   topic: string,
@@ -183,13 +182,12 @@ export async function waitForMessage(
 /**
  * Zbiera do expectedCount wiadomości spełniających matchFn w limicie czasu.
  *
- * Fix (deadlock): oryginalnie po zebraniu expectedCount wiadomości
- * `eachMessage` wywoływał `await consumer.disconnect()`, a `resolve` dopiero po nim.
- * `disconnect()` w kafkajs czeka na zakończenie bieżącego `eachMessage`, który
- * czekał na `disconnect()` — Promise nigdy się nie rozwiązywał, test wisiał do
- * limitu Jest, a consumer zostawał podłączony. Teraz `eachMessage` tylko
- * rozwiązuje Promise, a `disconnect()` jest w `finally` po wyjściu z handlera —
- * także gdy `run()` rzuci błąd.
+ * Fix (deadlock): po zebraniu expectedCount wiadomości `eachMessage` wywoływał
+ * `await consumer.disconnect()`, a `resolve` dopiero po nim. `disconnect()`
+ * czeka na zakończenie `eachMessage`, więc oba czekały na siebie. Promise się
+ * nie rozwiązywał, test wisiał do limitu Jest, a consumer zostawał podłączony.
+ * Teraz `eachMessage` tylko rozwiązuje Promise, a `disconnect()` jest w
+ * `finally`, także gdy `run()` rzuci błąd.
  */
 export async function collectMessages(
   topic: string,

@@ -1,16 +1,15 @@
 /**
  * Testy E2E przepływu: orders -> consumer -> orders-processed / orders-dlq.
  *
- * Izolacja: każdy test generuje własne UUID (orderId i/lub customer) i szuka
- * wyłącznie swoich wiadomości — topiki zawierają dane z poprzednich uruchomień.
+ * Topiki zawierają dane z poprzednich uruchomień, więc każdy test generuje
+ * własne UUID (`orderId` i/lub `customer`) i szuka tylko swoich wiadomości.
  *
- * Założenia:
- *  - Asercje na całym obiekcie (toStrictEqual) — sprawdzamy, że przyszły dobre
- *    dane, a nie tylko że „coś przyszło”.
- *  - Wiadomości walidacyjne na DLQ odnajdujemy po całym `originalMessage`;
- *    niepoprawne zamówienia mają unikalne i orderId, i customer, więc da się
- *    je odnaleźć nawet przy braku orderId.
- *  - Kafka gwarantuje kolejność tylko w obrębie partycji — wiele zamówień
+ *  - Asercje obejmują cały obiekt (`toStrictEqual`), a nie tylko to, że coś
+ *    przyszło.
+ *  - Błędy walidacji odnajdujemy na DLQ po całym `originalMessage`. Niepoprawne
+ *    zamówienia mają unikalne `orderId` i `customer`, więc da się je znaleźć
+ *    nawet bez `orderId`.
+ *  - Kafka gwarantuje kolejność tylko w obrębie partycji, więc wiele zamówień
  *    porównujemy jako zbiór.
  */
 import { randomUUID } from "crypto";
@@ -48,17 +47,16 @@ interface NotAnObjectDlqMessage {
 }
 
 /**
- * Okno asercji negatywnej („wiadomość NIE pojawiła się”). Sprawdzamy dopiero
- * po dotarciu wyniku na właściwy topic — `consumer` publikuje jeden wynik na
- * wiadomość, więc okno musi pokryć tylko odczyt drugiego topicu.
+ * Okno asercji „wiadomość nie przyszła”. Sprawdzamy ją dopiero po dotarciu
+ * wyniku na właściwy topic (`consumer` publikuje jeden wynik na wiadomość),
+ * więc okno musi pokryć tylko odczyt drugiego topicu.
  */
 const ABSENCE_WINDOW_SECONDS = 5;
 /**
  * Testy z asercją negatywną czekają dwa razy: na wynik (do 20 s) i na brak
- * wiadomości (5 s), a każdy helper dolicza connect + join grupy. Limit Jest
- * (domyślnie 30 s) musi być większy od tej sumy, inaczej przy wolnym, ale
- * poprawnym przetwarzaniu Jest przerwie test zamiast pozwolić asercji
- * zadziałać.
+ * wiadomości (5 s), a każdy helper dolicza connect i join grupy. Przy
+ * domyślnym limicie Jest (30 s) wolne, ale poprawne przetwarzanie mogłoby
+ * przerwać test, zanim asercja zdąży zadziałać.
  */
 const TWO_WAITS_TEST_TIMEOUT_MS = 45_000;
 /** Patrz waitUntilFlowIsReady. */
@@ -69,18 +67,18 @@ const hasOrderId = (orderId: string) => (value: Partial<Order>) => value.orderId
 const isDlqOf = (payload: unknown) => (value: { originalMessage?: unknown }) =>
   isDeepStrictEqual(value.originalMessage, payload);
 
-/** Poprawne zamówienie z unikalnym także `customer` — da się je odnaleźć nawet bez `orderId`. */
+/** Poprawne zamówienie z unikalnym też `customer`, żeby dało się je znaleźć bez `orderId`. */
 function makeUniqueOrder(): Order {
   return makeTestOrder({ customer: `Klient ${randomUUID()}` });
 }
 
 /**
- * Readiness check przed testami: wysyła zamówienie testowe i czeka na nie na
- * orders-processed. `consumer` po (re)starcie przez pewien czas nie ma
- * przypisanych partycji `orders` — po restarcie bez graceful shutdown stara
- * instancja nie opuszcza consumer group i rebalance czeka na jej session
- * timeout (~30 s). Bez tego sprawdzenia pierwszy test po `docker compose run`
- * dostawał `null` po 20 s, choć zamówienie było przetwarzane chwilę później.
+ * Readiness check: wysyła zamówienie testowe i czeka na nie na orders-processed.
+ * Po restarcie `consumer` przez pewien czas nie ma przypisanych partycji
+ * `orders`: stara instancja nie opuszcza grupy (brak graceful shutdown), więc
+ * rebalance czeka na jej session timeout (~30 s). Bez tego pierwszy test po
+ * `docker compose run` dostawał `null` po 20 s, choć zamówienie było
+ * przetwarzane chwilę później.
  */
 async function waitUntilFlowIsReady(producer: Producer): Promise<void> {
   const probe = makeTestOrder();
@@ -117,7 +115,7 @@ describe("Przepływ przetwarzania zamówień przez Kafkę", () => {
     await disconnectProducer();
   });
 
-  /** Wysyła dowolny obiekt jako JSON — pozwala złamać typy `Order` (złe typy pól). */
+  /** Wysyła dowolny obiekt jako JSON, także z polami o typach niezgodnych z `Order`. */
   async function sendPayload(payload: Record<string, unknown>): Promise<void> {
     await sendRaw(producer, JSON.stringify(payload));
   }
@@ -242,10 +240,10 @@ describe("Przepływ przetwarzania zamówień przez Kafkę", () => {
     });
 
     /**
-     * Test regresji: przed fixem prymitywy (`null`, liczba, boolean, string) powodowały
-     * crash `consumer`a i wstrzymywały wszystkie partycje; tablica trafiała na DLQ
-     * jako „Brakujące pola”. Ten sam key = ta sama partycja, więc zamówienie jest
-     * przetwarzane dopiero po złej wiadomości.
+     * Test regresji: przed fixem prymitywy (`null`, liczba, boolean, string)
+     * powodowały crash `consumer`a i zatrzymywały wszystkie partycje, a tablica
+     * trafiała na DLQ jako „Brakujące pola”. Ten sam key oznacza tę samą
+     * partycję, więc zamówienie jest przetwarzane dopiero po złej wiadomości.
      */
     it.each(["null", "123", "true", '"abc"', "[1, 2]"])(
       "payload %s nie blokuje kolejnego zamówienia z tym samym kluczem",
