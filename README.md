@@ -102,8 +102,12 @@ kluczem kolejnego zamówienia i sprawdzają, że zamówienie zostaje przetworzon
 proces po nim działał dalej, nic nie przetwarzając. Listener `CRASH` loguje
 teraz każdy crash, a gdy kafkajs nie planuje restartu (tak było w O2), kończy
 proces kodem 1, żeby Docker (`restart: unless-stopped`) uruchomił
-`consumer`a ponownie. Ta ścieżka nie jest pokryta testem E2E: po fixie żadna
-znana wiadomość nie powoduje crashu.
+`consumer`a ponownie. Ta ścieżka nie jest pokryta testem E2E (po fixie żadna
+znana wiadomość nie powoduje crashu), ale została potwierdzona ręcznie: z
+wyłączonym `isJsonObject` wiadomość `null` daje w logu
+`Crash konsumenta (restart: false)`, a kontener jest restartowany z rosnącym
+backoffem Dockera. Bez fixu O2 to pętla, ale widoczna w logach i w liczniku
+restartów, a nie cichy przestój.
 
 ### Podejście do testowania
 
