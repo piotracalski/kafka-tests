@@ -242,8 +242,9 @@ describe("Przepływ przetwarzania zamówień przez Kafkę", () => {
     });
 
     /**
-     * Regresja O2: przed fixem taki payload powodował crash `consumer`a i wstrzymywał
-     * wszystkie partycje. Ten sam key = ta sama partycja, więc zamówienie jest
+     * Regresja O2: przed fixem prymitywy (`null`, liczba, boolean, string) powodowały
+     * crash `consumer`a i wstrzymywały wszystkie partycje; tablica trafiała na DLQ
+     * jako „Brakujące pola”. Ten sam key = ta sama partycja, więc zamówienie jest
      * przetwarzane dopiero po złej wiadomości.
      */
     it.each(["null", "123", "true", '"abc"', "[1, 2]"])(

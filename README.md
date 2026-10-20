@@ -89,19 +89,20 @@ handlera.
 
 **Payload, który jest poprawnym JSON-em, ale nie obiektem** (`null`, `123`,
 `"abc"`). Wynik `JSON.parse` trafiał do `validate()` bez sprawdzenia typu, a
-operator `in` na prymitywie rzucał `TypeError` w `eachMessage`. W reprodukcji
-jedna taka wiadomość wyrzucała `consumer`a z grupy, kafkajs restartował go po
-kilku minutach i crash się powtarzał. Przez ten czas nie były przetwarzane
-**żadne** partycje (nie tylko ta ze złą wiadomością), a kontener był `Up` z
-pustymi logami. Teraz taka wiadomość, a także tablica, trafia na DLQ:
+operator `in` na prymitywie rzucał `TypeError` w `eachMessage`. kafkajs
+uznaje `TypeError` za błąd nienaprawialny: rozłącza `consumer`a i go nie
+restartuje. W reprodukcji jedna taka wiadomość zatrzymała przetwarzanie
+**wszystkich** partycji (nie tylko tej ze złą wiadomością), a kontener był
+`Up` z pustymi logami. Teraz taka wiadomość, a także tablica, trafia na DLQ:
 `{ error: "Wiadomość musi być obiektem JSON.", originalMessage }`. Wcześniej
 tablica dawała mylące „Brakujące pola”. Testy regresji wysyłają taki payload z
 kluczem kolejnego zamówienia i sprawdzają, że zamówienie zostaje przetworzone.
 
-**Crash `consumer`a był niewidoczny** (`logLevel.NOTHING`, brak obsługi).
-Listener `CRASH` loguje teraz każdy crash, a gdy kafkajs nie planuje restartu,
-kończy proces kodem 1, żeby Docker (`restart: unless-stopped`) uruchomił
-`consumer`a ponownie. Ta ścieżka nie jest pokryta testem: po fixie żadna
+**Crash `consumer`a był niewidoczny** (`logLevel.NOTHING`, brak obsługi), a
+proces po nim działał dalej, nic nie przetwarzając. Listener `CRASH` loguje
+teraz każdy crash, a gdy kafkajs nie planuje restartu (tak było w O2), kończy
+proces kodem 1, żeby Docker (`restart: unless-stopped`) uruchomił
+`consumer`a ponownie. Ta ścieżka nie jest pokryta testem E2E: po fixie żadna
 znana wiadomość nie powoduje crashu.
 
 ### Podejście do testowania
@@ -135,7 +136,11 @@ Synchronizacja wyłącznie przez polling z timeoutem, bez `sleep`.
   stronie testów) i nie zwracają klucza, więc testy nie sprawdzają, że key
   wyniku == `orderId`. `collectMessages` nie wykrywa duplikatów — „dokładnie
   raz” nie jest sprawdzane.
-- **Payload `null` / liczba na DLQ nie jest asertowany co do treści.** Nie ma
+- **Inny wyjątek w `eachMessage` nadal zatrzyma przetwarzanie**, np. błąd
+  `producer.send` na DLQ: kafkajs go ponawia (`retries: 30` → minuty
+  przestoju, bez logów), a po restarcie ta sama wiadomość wywoła go znowu.
+  Lepiej: łapać błędy per wiadomość i włączyć logi kafkajs na poziomie `WARN`.
+- **Treść DLQ dla payloadów `null` / liczba / boolean nie jest asertowana.** Nie ma
   w nim unikalnego znacznika, a helpery nie zwracają klucza, więc testy
   sprawdzają tylko, że kolejne zamówienie przechodzi. Treść DLQ jest
   sprawdzana dla stringa i tablicy.

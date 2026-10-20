@@ -38,8 +38,9 @@ const NOT_AN_OBJECT_ERROR = "Wiadomość musi być obiektem JSON.";
  * Fix (O2): `JSON.parse` zwraca dowolną wartość JSON, a wynik był przypisywany
  * do `Record<string, unknown>` bez sprawdzenia. Dla payloadu `null`, `123` czy
  * `"abc"` operator `in` w `validate()` rzucał `TypeError` w `eachMessage` —
- * kafkajs nie restartuje `consumer`a po takim błędzie, więc jedna wiadomość
- * zatrzymywała przetwarzanie wszystkich partycji. Teraz taka wiadomość trafia
+ * kafkajs nie restartuje `consumer`a po takim błędzie (patrz
+ * `exitOnFatalCrash`), więc jedna wiadomość zatrzymywała przetwarzanie
+ * wszystkich partycji. Teraz taka wiadomość trafia
  * na DLQ z błędem `NOT_AN_OBJECT_ERROR`; tablice traktujemy tak samo (wcześniej
  * dawały mylące „Brakujące pola”).
  */
@@ -68,14 +69,15 @@ function validate(order: Record<string, unknown>): string[] {
 /**
  * Loguje crash `consumer`a i kończy proces, gdy kafkajs nie planuje restartu.
  *
- * Fix: crash (np. wyjątek w `eachMessage`) był niewidoczny — `logLevel.NOTHING`
- * i brak listenera. W reprodukcji O2 `consumer` wychodził z grupy
- * (`LeaveGroup`), kafkajs restartował go dopiero po ~6 min, a przez ten czas
- * nie były przetwarzane żadne partycje; kontener był `Up`, logi puste. Teraz
- * każdy crash jest logowany. Gdy kafkajs nie zrestartuje `consumer`a
- * (`restart: false`), proces nadal by działał (połączenie producenta trzyma
- * event loop) — dlatego kończymy go kodem 1, a Docker
- * (`restart: unless-stopped`) uruchamia `consumer`a ponownie.
+ * Fix: wyjątek z `eachMessage` typu `TypeError`, `RangeError`,
+ * `ReferenceError` lub `SyntaxError` kafkajs uznaje za nienaprawialny: nie
+ * ponawia przetwarzania, rozłącza `consumer`a (`LeaveGroup`) i nie restartuje
+ * go (`restart: false`). Proces działał dalej (połączenie producenta trzyma
+ * event loop), więc kontener był `Up`, logi puste (`logLevel.NOTHING`, brak
+ * listenera), a żadna partycja nie była przetwarzana — tak kończyło się O2.
+ * Teraz każdy crash jest logowany, a przy `restart: false` proces kończy się
+ * kodem 1, więc Docker (`restart: unless-stopped`) uruchamia `consumer`a
+ * ponownie.
  */
 function exitOnFatalCrash(consumer: Consumer): void {
   consumer.on(consumer.events.CRASH, ({ payload }) => {
