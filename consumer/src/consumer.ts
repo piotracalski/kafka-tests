@@ -30,6 +30,24 @@ function log(message: string): void {
   console.log(`${new Date().toISOString()} [consumer] ${message}`);
 }
 
+const NOT_AN_OBJECT_ERROR = "Wiadomość musi być obiektem JSON.";
+
+/**
+ * Czy sparsowany JSON jest obiektem (a nie `null`, prymitywem ani tablicą).
+ *
+ * Fix (O2): `JSON.parse` zwraca dowolną wartość JSON, a wynik był przypisywany
+ * do `Record<string, unknown>` bez sprawdzenia. Dla payloadu `null`, `123` czy
+ * `"abc"` operator `in` w `validate()` rzucał `TypeError` w `eachMessage` —
+ * kafkajs nie restartuje `consumer`a po takim błędzie (patrz
+ * `exitOnFatalCrash`), więc jedna wiadomość zatrzymywała przetwarzanie
+ * wszystkich partycji. Teraz taka wiadomość trafia
+ * na DLQ z błędem `NOT_AN_OBJECT_ERROR`; tablice traktujemy tak samo (wcześniej
+ * dawały mylące „Brakujące pola”).
+ */
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 /** Zwraca listę błędów walidacji (pusta tablica = wiadomość poprawna). */
 function validate(order: Record<string, unknown>): string[] {
   const errors: string[] = [];
@@ -48,6 +66,38 @@ function validate(order: Record<string, unknown>): string[] {
   return errors;
 }
 
+/**
+ * Pierwotny błąd. kafkajs opakowuje wyjątek z `eachMessage` w swój błąd
+ * (`cause`), którego stack wskazuje tylko na `kafkajs/src/retry`, a nie na
+ * miejsce w naszym kodzie.
+ */
+function rootCause(error: Error): Error {
+  return "cause" in error && error.cause instanceof Error ? rootCause(error.cause) : error;
+}
+
+/**
+ * Loguje crash `consumer`a i kończy proces, gdy kafkajs nie planuje restartu.
+ *
+ * Fix: wyjątek z `eachMessage` typu `TypeError`, `RangeError`,
+ * `ReferenceError` lub `SyntaxError` kafkajs uznaje za nienaprawialny: nie
+ * ponawia przetwarzania, rozłącza `consumer`a (`LeaveGroup`) i nie restartuje
+ * go (`restart: false`). Proces działał dalej (połączenie producenta trzyma
+ * event loop), więc kontener był `Up`, logi puste (`logLevel.NOTHING`, brak
+ * listenera), a żadna partycja nie była przetwarzana — tak kończyło się O2.
+ * Teraz każdy crash jest logowany, a przy `restart: false` proces kończy się
+ * kodem 1, więc Docker (`restart: unless-stopped`) uruchamia `consumer`a
+ * ponownie.
+ */
+function exitOnFatalCrash(consumer: Consumer): void {
+  consumer.on(consumer.events.CRASH, ({ payload }) => {
+    const error = rootCause(payload.error);
+    log(`Crash konsumenta (restart: ${payload.restart}): ${error.stack ?? error.message}`);
+    if (!payload.restart) {
+      process.exit(1);
+    }
+  });
+}
+
 async function main(): Promise<void> {
   const kafka = new Kafka({
     clientId: "orders-consumer",
@@ -61,6 +111,7 @@ async function main(): Promise<void> {
 
   const consumer: Consumer = kafka.consumer({ groupId: GROUP_ID });
   const producer: Producer = kafka.producer();
+  exitOnFatalCrash(consumer);
 
   await consumer.connect();
   await producer.connect();
@@ -79,7 +130,7 @@ async function main(): Promise<void> {
         return;
       }
 
-      let order: Record<string, unknown>;
+      let order: unknown;
       try {
         order = JSON.parse(rawValue.toString("utf-8"));
       } catch (err) {
@@ -100,8 +151,8 @@ async function main(): Promise<void> {
         return;
       }
 
-      const errors = validate(order);
-      if (errors.length > 0) {
+      const errors = isJsonObject(order) ? validate(order) : [NOT_AN_OBJECT_ERROR];
+      if (!isJsonObject(order) || errors.length > 0) {
         log(`Wiadomość niepoprawna, wysyłam do DLQ: ${JSON.stringify(order)} | błędy: ${errors.join("; ")}`);
         await producer.send({
           topic: DLQ_TOPIC,
