@@ -141,6 +141,11 @@ Synchronizacja wyłącznie przez polling z timeoutem, bez `sleep`.
   stronie testów) i nie zwracają klucza, więc testy nie sprawdzają, że key
   wyniku == `orderId`. `collectMessages` nie wykrywa duplikatów — „dokładnie
   raz” nie jest sprawdzane.
+- **Timeout helpera to `null`, nie błąd.** Gdy `waitForMessage` nic nie
+  znajdzie, test kończy się komunikatem `expected not null`, bez informacji, na
+  który topic i jak długo czekał. Lepiej: helper rzuca błąd z nazwą topicu i
+  limitem czasu. Przy okazji warto wydzielić wspólną pętlę `waitForMessage` /
+  `collectMessages` — dziś to prawie ten sam kod skopiowany dwa razy.
 - **Inny wyjątek w `eachMessage` nadal zatrzyma przetwarzanie**, np. błąd
   `producer.send` na DLQ: kafkajs go ponawia (`retries: 30` → minuty
   przestoju, bez logów), a po restarcie ta sama wiadomość wywoła go znowu.
