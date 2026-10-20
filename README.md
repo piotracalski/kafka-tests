@@ -174,8 +174,11 @@ poprzednich uruchomień, pojedynczym testem (`-t`) i w losowej kolejności
   sprawdzana dla stringa i tablicy.
 - **Luźna walidacja w `consumer`:** typ `customer` nie jest sprawdzany,
   `amount` może być ujemne, wejściowy `status` jest ignorowany i nadpisywany
-  (testy dokumentują to ostatnie jako obecne zachowanie). Pusta wiadomość jest
-  pomijana po cichu, bez DLQ.
+  (testy dokumentują to ostatnie jako obecne zachowanie). Wiadomość bez
+  wartości (`value: null`, tombstone) jest pomijana po cichu, bez DLQ. Pusty
+  string to co innego: kafkajs zwraca go jako pusty `Buffer`, który przechodzi
+  przez `if (!rawValue)`, więc według kodu trafia na DLQ jako niepoprawny JSON
+  (nie pokryte testem).
 - **Brak wspólnego kontraktu wiadomości** — typ zamówienia jest zdefiniowany
   osobno w `producer`, `consumer` i helperach; zmiana formatu w `consumer`
   nie zepsuje kompilacji testów (rozwiązanie: wspólny pakiet typów / schema
