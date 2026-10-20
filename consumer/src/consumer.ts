@@ -67,6 +67,15 @@ function validate(order: Record<string, unknown>): string[] {
 }
 
 /**
+ * Pierwotny błąd. kafkajs opakowuje wyjątek z `eachMessage` w swój błąd
+ * (`cause`), którego stack wskazuje tylko na `kafkajs/src/retry`, a nie na
+ * miejsce w naszym kodzie.
+ */
+function rootCause(error: Error): Error {
+  return "cause" in error && error.cause instanceof Error ? rootCause(error.cause) : error;
+}
+
+/**
  * Loguje crash `consumer`a i kończy proces, gdy kafkajs nie planuje restartu.
  *
  * Fix: wyjątek z `eachMessage` typu `TypeError`, `RangeError`,
@@ -81,7 +90,8 @@ function validate(order: Record<string, unknown>): string[] {
  */
 function exitOnFatalCrash(consumer: Consumer): void {
   consumer.on(consumer.events.CRASH, ({ payload }) => {
-    log(`Crash konsumenta (restart: ${payload.restart}): ${payload.error.stack ?? payload.error.message}`);
+    const error = rootCause(payload.error);
+    log(`Crash konsumenta (restart: ${payload.restart}): ${error.stack ?? error.message}`);
     if (!payload.restart) {
       process.exit(1);
     }
