@@ -69,12 +69,12 @@ function makeUniqueOrder(): Order {
 }
 
 /**
- * Readiness check przed testami: wysyła `order` i czeka na niego na
+ * Readiness check przed testami: wysyła zamówienie testowe i czeka na nie na
  * orders-processed. `consumer` po (re)starcie przez pewien czas nie ma
  * przypisanych partycji `orders` — po restarcie bez graceful shutdown stara
  * instancja nie opuszcza consumer group i rebalance czeka na jej session
  * timeout (~30 s). Bez tego sprawdzenia pierwszy test po `docker compose run`
- * dostawał `null` po 20 s, choć `order` był przetwarzany chwilę później.
+ * dostawał `null` po 20 s, choć zamówienie było przetwarzane chwilę później.
  */
 async function waitUntilFlowIsReady(producer: Producer): Promise<void> {
   const probe = makeTestOrder();
@@ -87,7 +87,7 @@ async function waitUntilFlowIsReady(producer: Producer): Promise<void> {
   );
   if (processed === null) {
     throw new Error(
-      `\`consumer\` nie przetworzył \`order\`u w ${FLOW_READY_TIMEOUT_SECONDS} s — ` +
+      `\`consumer\` nie przetworzył zamówienia testowego w ${FLOW_READY_TIMEOUT_SECONDS} s — ` +
         "czy działa? (docker compose ps, docker compose logs consumer)"
     );
   }
@@ -181,13 +181,13 @@ describe("Przepływ przetwarzania zamówień przez Kafkę", () => {
   describe("wiele zamówień naraz", () => {
     it("każde trafia na orders-processed (kolejność między partycjami nie jest gwarantowana)", async () => {
       const orders = Array.from({ length: 5 }, () => makeTestOrder());
-      const orderIds = new Set(orders.map((order) => order.orderId));
+      const pendingOrderIds = new Set(orders.map((order) => order.orderId));
 
       await Promise.all(orders.map((order) => sendOrder(producer, order)));
 
       const processed: Order[] = await collectMessages(
         ORDERS_PROCESSED_TOPIC,
-        (value: Partial<Order>) => value.orderId !== undefined && orderIds.has(value.orderId),
+        (value: Partial<Order>) => value.orderId !== undefined && pendingOrderIds.delete(value.orderId),
         orders.length
       );
 
@@ -224,7 +224,7 @@ describe("Przepływ przetwarzania zamówień przez Kafkę", () => {
 
   describe("walidacja zamówienia", () => {
     it.each<keyof Order>(["orderId", "customer", "amount", "status"])(
-      "brak pola %s -> orders-dlq z listą brakujących pól",
+      "zamówienie bez pola %s trafia na orders-dlq z listą brakujących pól",
       async (field) => {
         const payload = withoutField(makeUniqueOrder(), field);
 
@@ -238,9 +238,9 @@ describe("Przepływ przetwarzania zamówień przez Kafkę", () => {
     );
 
     it.each([
-      { field: "amount", value: "123.45", error: "Pole 'amount' musi być liczbą." },
-      { field: "orderId", value: 123, error: "Pole 'orderId' musi być stringiem." },
-    ])("$field o złym typie ($value) -> orders-dlq: $error", async ({ field, value, error }) => {
+      { field: "amount", value: "123.45", type: "string", error: "Pole 'amount' musi być liczbą." },
+      { field: "orderId", value: 123, type: "number", error: "Pole 'orderId' musi być stringiem." },
+    ])("zamówienie z polem $field typu $type trafia na orders-dlq z komunikatem: $error", async ({ field, value, error }) => {
       const payload = { ...makeUniqueOrder(), [field]: value };
 
       await sendPayload(payload);
@@ -248,7 +248,7 @@ describe("Przepływ przetwarzania zamówień przez Kafkę", () => {
       expect(await waitForValidationDlq(payload)).toStrictEqual({ error, originalMessage: payload });
     });
 
-    it("kilka błędów naraz -> wszystkie w jednym komunikacie, rozdzielone '; '", async () => {
+    it("zamówienie z kilkoma błędami naraz trafia na orders-dlq ze wszystkimi komunikatami rozdzielonymi '; '", async () => {
       const payload = { orderId: randomUUID(), amount: "dużo" };
 
       await sendPayload(payload);
