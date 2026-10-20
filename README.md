@@ -130,11 +130,11 @@ Stabilność sprawdziłem kilkoma pełnymi przebiegami z rzędu, pojedynczym tes
 
 ### Znane ograniczenia / co zrobiłbym inaczej mając więcej czasu
 
-- **Asercja „wiadomość nie przyszła” to okno 5 s.** Nie da fałszywie
-  czerwonego wyniku, bo sprawdzamy ją dopiero po dotarciu wyniku na właściwy
-  topic. Przy dużym topicu helper może jednak nie zdążyć go przeczytać i test
-  przejdzie fałszywie. Lepiej czytać do końcowych offsetów partycji
-  (`admin.fetchTopicOffsets`).
+- **Asercja „wiadomość nie przyszła” to okno 5 s.** Sprawdzamy ją dopiero po
+  dotarciu wyniku na właściwy topic, więc test nie zgłosi błędu, którego nie
+  ma. Przy dużym topicu helper może jednak nie zdążyć go przeczytać i test
+  przejdzie, mimo że wiadomość tam jest. Lepiej czytać do końcowych offsetów
+  partycji (`admin.fetchTopicOffsets`).
 - **Wolny start po restarcie `consumer`a (20–25 s).** `consumer` nie obsługuje
   `SIGTERM`, więc zatrzymana instancja nie opuszcza consumer group. Do upływu
   session timeoutu partycje `orders` są przypisane do martwej instancji i nikt
