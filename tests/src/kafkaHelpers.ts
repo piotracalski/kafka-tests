@@ -126,6 +126,15 @@ function tryParse(value: Buffer | null): any | null {
 /**
  * Czeka aż w danym topicu pojawi się wiadomość spełniająca matchFn(value) -> boolean.
  * Zwraca sparsowaną wiadomość albo null, jeśli nie znaleziono w limicie czasu.
+ *
+ * Fix (deadlock): oryginalnie po dopasowaniu `eachMessage` wywoływał
+ * `await consumer.disconnect()`, a `resolve` dopiero po nim. `disconnect()`
+ * w kafkajs czeka na zakończenie bieżącego `eachMessage`, który czekał na
+ * `disconnect()` — Promise nigdy się nie rozwiązywał, timer też nie pomagał
+ * (`settled` było już ustawione), test wisiał do limitu Jest, a consumer
+ * zostawał podłączony. Teraz `eachMessage` tylko rozwiązuje Promise, a
+ * `disconnect()` jest w `finally` po wyjściu z handlera — także gdy `run()`
+ * rzuci błąd.
  */
 export async function waitForMessage(
   topic: string,
@@ -135,44 +144,53 @@ export async function waitForMessage(
 ): Promise<any | null> {
   const consumer = newConsumer();
   await consumer.connect();
-  await consumer.subscribe({ topic, fromBeginning: true });
 
-  return new Promise((resolve, reject) => {
-    let settled = false;
+  try {
+    await consumer.subscribe({ topic, fromBeginning: true });
 
-    const finish = async (result: unknown) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      try {
-        await consumer.disconnect();
-      } finally {
-        resolve(result);
-      }
-    };
+    return await new Promise((resolve, reject) => {
+      let settled = false;
 
-    const timer = setTimeout(() => {
-      void finish(null);
-    }, timeoutSeconds * 1000);
-
-    consumer
-      .run({
-        eachMessage: async ({ message }: EachMessagePayload) => {
-          if (settled) return;
-          const parsed = tryParse(message.value);
-          if (parsed !== null && matchFn(parsed)) {
-            await finish(parsed);
-          }
-        },
-      })
-      .catch((err) => {
+      const finish = (result: unknown) => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timer);
-        reject(err);
-      });
-  });
+        resolve(result);
+      };
+
+      const timer = setTimeout(() => finish(null), timeoutSeconds * 1000);
+
+      consumer
+        .run({
+          eachMessage: async ({ message }: EachMessagePayload) => {
+            if (settled) return;
+            const parsed = tryParse(message.value);
+            if (parsed !== null && matchFn(parsed)) {
+              finish(parsed);
+            }
+          },
+        })
+        .catch((err) => {
+          clearTimeout(timer);
+          reject(err);
+        });
+    });
+  } finally {
+    await consumer.disconnect();
+  }
 }
 
-/** Zbiera do expectedCount wiadomości spełniających matchFn w limicie czasu. */
+/**
+ * Zbiera do expectedCount wiadomości spełniających matchFn w limicie czasu.
+ *
+ * Fix (deadlock): oryginalnie po zebraniu expectedCount wiadomości
+ * `eachMessage` wywoływał `await consumer.disconnect()`, a `resolve` dopiero po nim.
+ * `disconnect()` w kafkajs czeka na zakończenie bieżącego `eachMessage`, który
+ * czekał na `disconnect()` — Promise nigdy się nie rozwiązywał, test wisiał do
+ * limitu Jest, a consumer zostawał podłączony. Teraz `eachMessage` tylko
+ * rozwiązuje Promise, a `disconnect()` jest w `finally` po wyjściu z handlera —
+ * także gdy `run()` rzuci błąd.
+ */
 export async function collectMessages(
   topic: string,
   matchFn: MatchFn,
@@ -182,45 +200,44 @@ export async function collectMessages(
 ): Promise<any[]> {
   const consumer = newConsumer();
   await consumer.connect();
-  await consumer.subscribe({ topic, fromBeginning: true });
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const found: any[] = [];
 
-  return new Promise((resolve, reject) => {
-    let settled = false;
+  try {
+    await consumer.subscribe({ topic, fromBeginning: true });
 
-    const finish = async () => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      try {
-        await consumer.disconnect();
-      } finally {
-        resolve(found);
-      }
-    };
+    return await new Promise((resolve, reject) => {
+      let settled = false;
 
-    const timer = setTimeout(() => {
-      void finish();
-    }, timeoutSeconds * 1000);
-
-    consumer
-      .run({
-        eachMessage: async ({ message }: EachMessagePayload) => {
-          if (settled) return;
-          const parsed = tryParse(message.value);
-          if (parsed !== null && matchFn(parsed)) {
-            found.push(parsed);
-            if (found.length >= expectedCount) {
-              await finish();
-            }
-          }
-        },
-      })
-      .catch((err) => {
+      const finish = () => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timer);
-        reject(err);
-      });
-  });
+        resolve(found);
+      };
+
+      const timer = setTimeout(finish, timeoutSeconds * 1000);
+
+      consumer
+        .run({
+          eachMessage: async ({ message }: EachMessagePayload) => {
+            if (settled) return;
+            const parsed = tryParse(message.value);
+            if (parsed !== null && matchFn(parsed)) {
+              found.push(parsed);
+              if (found.length >= expectedCount) {
+                finish();
+              }
+            }
+          },
+        })
+        .catch((err) => {
+          clearTimeout(timer);
+          reject(err);
+        });
+    });
+  } finally {
+    await consumer.disconnect();
+  }
 }
