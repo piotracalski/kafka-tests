@@ -242,7 +242,7 @@ describe("Przepływ przetwarzania zamówień przez Kafkę", () => {
     });
 
     /**
-     * Regresja O2: przed fixem prymitywy (`null`, liczba, boolean, string) powodowały
+     * Test regresji: przed fixem prymitywy (`null`, liczba, boolean, string) powodowały
      * crash `consumer`a i wstrzymywały wszystkie partycje; tablica trafiała na DLQ
      * jako „Brakujące pola”. Ten sam key = ta sama partycja, więc zamówienie jest
      * przetwarzane dopiero po złej wiadomości.
