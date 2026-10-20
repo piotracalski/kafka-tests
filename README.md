@@ -85,6 +85,25 @@ zamiast ~40 s), a consumer testowy zostawał podłączony. Teraz `eachMessage`
 tylko rozwiązuje Promise, a `disconnect()` jest w `finally`, po wyjściu z
 handlera.
 
+### Zmiany w `consumer`
+
+**Payload, który jest poprawnym JSON-em, ale nie obiektem** (`null`, `123`,
+`"abc"`). Wynik `JSON.parse` trafiał do `validate()` bez sprawdzenia typu, a
+operator `in` na prymitywie rzucał `TypeError` w `eachMessage`. W reprodukcji
+jedna taka wiadomość wyrzucała `consumer`a z grupy, kafkajs restartował go po
+kilku minutach i crash się powtarzał. Przez ten czas nie były przetwarzane
+**żadne** partycje (nie tylko ta ze złą wiadomością), a kontener był `Up` z
+pustymi logami. Teraz taka wiadomość, a także tablica, trafia na DLQ:
+`{ error: "Wiadomość musi być obiektem JSON.", originalMessage }`. Wcześniej
+tablica dawała mylące „Brakujące pola”. Testy regresji wysyłają taki payload z
+kluczem kolejnego zamówienia i sprawdzają, że zamówienie zostaje przetworzone.
+
+**Crash `consumer`a był niewidoczny** (`logLevel.NOTHING`, brak obsługi).
+Listener `CRASH` loguje teraz każdy crash, a gdy kafkajs nie planuje restartu,
+kończy proces kodem 1, żeby Docker (`restart: unless-stopped`) uruchomił
+`consumer`a ponownie. Ta ścieżka nie jest pokryta testem: po fixie żadna
+znana wiadomość nie powoduje crashu.
+
 ### Podejście do testowania
 
 Testy traktują system jak czarną skrzynkę: wysyłają wiadomość na `orders` i
@@ -116,10 +135,10 @@ Synchronizacja wyłącznie przez polling z timeoutem, bez `sleep`.
   stronie testów) i nie zwracają klucza, więc testy nie sprawdzają, że key
   wyniku == `orderId`. `collectMessages` nie wykrywa duplikatów — „dokładnie
   raz” nie jest sprawdzane.
-- **Payload, który jest poprawnym JSON-em, ale nie obiektem** (`null`, `123`,
-  `"abc"`): z analizy kodu `validate()` rzuca `TypeError` poza `try/catch`,
-  więc wiadomość nie trafi na DLQ, tylko będzie ponawiana w kółko i zablokuje
-  partycję (poison message). Do zweryfikowania i naprawy.
+- **Payload `null` / liczba na DLQ nie jest asertowany co do treści.** Nie ma
+  w nim unikalnego znacznika, a helpery nie zwracają klucza, więc testy
+  sprawdzają tylko, że kolejne zamówienie przechodzi. Treść DLQ jest
+  sprawdzana dla stringa i tablicy.
 - **Luźna walidacja w `consumer`:** typ `customer` nie jest sprawdzany,
   `amount` może być ujemne, wejściowy `status` jest ignorowany i nadpisywany
   (testy dokumentują to ostatnie jako obecne zachowanie). Pusta wiadomość jest
