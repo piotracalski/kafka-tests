@@ -43,7 +43,7 @@ interface ValidationDlqMessage {
 
 /**
  * Okno asercji negatywnej („wiadomość NIE pojawiła się”). Sprawdzamy dopiero
- * po dotarciu wyniku na właściwy topic — konsument publikuje jeden wynik na
+ * po dotarciu wyniku na właściwy topic — `consumer` publikuje jeden wynik na
  * wiadomość, więc okno musi pokryć tylko odczyt drugiego topicu.
  */
 const ABSENCE_WINDOW_SECONDS = 5;
@@ -55,6 +55,8 @@ const ABSENCE_WINDOW_SECONDS = 5;
  * zadziałać.
  */
 const TWO_WAITS_TEST_TIMEOUT_MS = 45_000;
+/** Patrz waitUntilFlowIsReady. */
+const FLOW_READY_TIMEOUT_SECONDS = 60;
 
 const hasOrderId = (orderId: string) => (value: Partial<Order>) => value.orderId === orderId;
 
@@ -64,6 +66,31 @@ const isDlqOf = (payload: object) => (value: Partial<ValidationDlqMessage>) =>
 /** Poprawne zamówienie z unikalnym także `customer` — da się je odnaleźć nawet bez `orderId`. */
 function makeUniqueOrder(): Order {
   return makeTestOrder({ customer: `Klient ${randomUUID()}` });
+}
+
+/**
+ * Readiness check przed testami: wysyła `order` i czeka na niego na
+ * orders-processed. `consumer` po (re)starcie przez pewien czas nie ma
+ * przypisanych partycji `orders` — po restarcie bez graceful shutdown stara
+ * instancja nie opuszcza consumer group i rebalance czeka na jej session
+ * timeout (~30 s). Bez tego sprawdzenia pierwszy test po `docker compose run`
+ * dostawał `null` po 20 s, choć `order` był przetwarzany chwilę później.
+ */
+async function waitUntilFlowIsReady(producer: Producer): Promise<void> {
+  const probe = makeTestOrder();
+  await sendOrder(producer, probe);
+
+  const processed = await waitForMessage(
+    ORDERS_PROCESSED_TOPIC,
+    hasOrderId(probe.orderId),
+    FLOW_READY_TIMEOUT_SECONDS
+  );
+  if (processed === null) {
+    throw new Error(
+      `\`consumer\` nie przetworzył \`order\`u w ${FLOW_READY_TIMEOUT_SECONDS} s — ` +
+        "czy działa? (docker compose ps, docker compose logs consumer)"
+    );
+  }
 }
 
 function withoutField(order: Order, field: keyof Order): Partial<Order> {
@@ -77,7 +104,8 @@ describe("Przepływ przetwarzania zamówień przez Kafkę", () => {
 
   beforeAll(async () => {
     producer = await getProducer();
-  });
+    await waitUntilFlowIsReady(producer);
+  }, (FLOW_READY_TIMEOUT_SECONDS + 10) * 1000);
 
   afterAll(async () => {
     await disconnectProducer();
