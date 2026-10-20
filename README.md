@@ -24,12 +24,14 @@ docker compose logs -f consumer
 ## Uruchomienie testów (tu pracujesz)
 
 ```bash
-docker compose --profile test run --rm tests
+docker compose --profile test run --build --rm tests
 ```
 
 ### Uruchomienie testów lokalnie (bez Dockera dla samych testów)
 
-Przydatne przy pisaniu/debugowaniu — szybszy cykl niż przebudowa obrazu Dockera:
+Przydatne przy pisaniu/debugowaniu — szybszy cykl niż przebudowa obrazu Dockera.
+**Uwaga:** ta ścieżka nie jest zweryfikowana — patrz „Znane ograniczenia”
+(adres ogłaszany przez brokera).
 
 ```bash
 cd tests
