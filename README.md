@@ -27,6 +27,15 @@ docker compose logs -f consumer
 docker compose --profile test run --build --rm tests
 ```
 
+Pojedynczy test (po fragmencie nazwy) i losowa kolejność testów:
+
+```bash
+docker compose --profile test run --rm tests npm test -- -t "payload null"
+docker compose --profile test run --rm tests npm test -- --randomize
+```
+
+Przy `--randomize` Jest wypisuje `Seed:` — tę samą kolejność odtwarza `--seed=<liczba>`.
+
 ### Uruchomienie testów lokalnie (bez Dockera dla samych testów)
 
 Przydatne przy pisaniu/debugowaniu — szybszy cykl niż przebudowa obrazu Dockera.
@@ -120,7 +129,10 @@ czytają topic od początku nową consumer group, więc testy szukają tylko swo
 wiadomości i nie przeszkadzają im dane z poprzednich uruchomień ani kolejność
 testów. Scenariusze negatywne sprawdzają też drugą stronę — że poprawne
 zamówienie nie trafia na DLQ, a niepoprawne nie trafia na `orders-processed`.
-Synchronizacja wyłącznie przez polling z timeoutem, bez `sleep`.
+Synchronizacja wyłącznie przez polling z timeoutem, bez `sleep`. Stabilność
+sprawdzona kilkoma pełnymi przebiegami z rzędu na topikach z danymi z
+poprzednich uruchomień, pojedynczym testem (`-t`) i w losowej kolejności
+(`--randomize`) — za każdym razem 21/21.
 
 ### Znane ograniczenia / co zrobiłbym inaczej mając więcej czasu
 
@@ -146,6 +158,11 @@ Synchronizacja wyłącznie przez polling z timeoutem, bez `sleep`.
   który topic i jak długo czekał. Lepiej: helper rzuca błąd z nazwą topicu i
   limitem czasu. Przy okazji warto wydzielić wspólną pętlę `waitForMessage` /
   `collectMessages` — dziś to prawie ten sam kod skopiowany dwa razy.
+- **Szum w logach testów.** kafkajs loguje na poziomie INFO start, join grupy
+  i zatrzymanie każdego consumera z helperów (plus ostrzeżenie o domyślnym
+  partitionerze), więc wynik testów ginie w logach. Wystarczyłoby
+  `logLevel: logLevel.WARN` w `new Kafka(...)` i
+  `KAFKAJS_NO_PARTITIONER_WARNING=1`.
 - **Inny wyjątek w `eachMessage` nadal zatrzyma przetwarzanie**, np. błąd
   `producer.send` na DLQ: kafkajs go ponawia (`retries: 30` → minuty
   przestoju, bez logów), a po restarcie ta sama wiadomość wywoła go znowu.
