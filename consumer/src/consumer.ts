@@ -30,6 +30,23 @@ function log(message: string): void {
   console.log(`${new Date().toISOString()} [consumer] ${message}`);
 }
 
+const NOT_AN_OBJECT_ERROR = "Wiadomość musi być obiektem JSON.";
+
+/**
+ * Czy sparsowany JSON jest obiektem (a nie `null`, prymitywem ani tablicą).
+ *
+ * Fix (O2): `JSON.parse` zwraca dowolną wartość JSON, a wynik był przypisywany
+ * do `Record<string, unknown>` bez sprawdzenia. Dla payloadu `null`, `123` czy
+ * `"abc"` operator `in` w `validate()` rzucał `TypeError` w `eachMessage` —
+ * kafkajs nie restartuje `consumer`a po takim błędzie, więc jedna wiadomość
+ * zatrzymywała przetwarzanie wszystkich partycji. Teraz taka wiadomość trafia
+ * na DLQ z błędem `NOT_AN_OBJECT_ERROR`; tablice traktujemy tak samo (wcześniej
+ * dawały mylące „Brakujące pola”).
+ */
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 /** Zwraca listę błędów walidacji (pusta tablica = wiadomość poprawna). */
 function validate(order: Record<string, unknown>): string[] {
   const errors: string[] = [];
@@ -48,6 +65,27 @@ function validate(order: Record<string, unknown>): string[] {
   return errors;
 }
 
+/**
+ * Loguje crash `consumer`a i kończy proces, gdy kafkajs nie planuje restartu.
+ *
+ * Fix: crash (np. wyjątek w `eachMessage`) był niewidoczny — `logLevel.NOTHING`
+ * i brak listenera. W reprodukcji O2 `consumer` wychodził z grupy
+ * (`LeaveGroup`), kafkajs restartował go dopiero po ~6 min, a przez ten czas
+ * nie były przetwarzane żadne partycje; kontener był `Up`, logi puste. Teraz
+ * każdy crash jest logowany. Gdy kafkajs nie zrestartuje `consumer`a
+ * (`restart: false`), proces nadal by działał (połączenie producenta trzyma
+ * event loop) — dlatego kończymy go kodem 1, a Docker
+ * (`restart: unless-stopped`) uruchamia `consumer`a ponownie.
+ */
+function exitOnFatalCrash(consumer: Consumer): void {
+  consumer.on(consumer.events.CRASH, ({ payload }) => {
+    log(`Crash konsumenta (restart: ${payload.restart}): ${payload.error.stack ?? payload.error.message}`);
+    if (!payload.restart) {
+      process.exit(1);
+    }
+  });
+}
+
 async function main(): Promise<void> {
   const kafka = new Kafka({
     clientId: "orders-consumer",
@@ -61,6 +99,7 @@ async function main(): Promise<void> {
 
   const consumer: Consumer = kafka.consumer({ groupId: GROUP_ID });
   const producer: Producer = kafka.producer();
+  exitOnFatalCrash(consumer);
 
   await consumer.connect();
   await producer.connect();
@@ -79,7 +118,7 @@ async function main(): Promise<void> {
         return;
       }
 
-      let order: Record<string, unknown>;
+      let order: unknown;
       try {
         order = JSON.parse(rawValue.toString("utf-8"));
       } catch (err) {
@@ -100,8 +139,8 @@ async function main(): Promise<void> {
         return;
       }
 
-      const errors = validate(order);
-      if (errors.length > 0) {
+      const errors = isJsonObject(order) ? validate(order) : [NOT_AN_OBJECT_ERROR];
+      if (!isJsonObject(order) || errors.length > 0) {
         log(`Wiadomość niepoprawna, wysyłam do DLQ: ${JSON.stringify(order)} | błędy: ${errors.join("; ")}`);
         await producer.send({
           topic: DLQ_TOPIC,
