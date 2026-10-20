@@ -39,8 +39,9 @@ Przy `--randomize` Jest wypisuje `Seed:` — tę samą kolejność odtwarza `--s
 ### Uruchomienie testów lokalnie (bez Dockera dla samych testów)
 
 Przydatne przy pisaniu/debugowaniu — szybszy cykl niż przebudowa obrazu Dockera.
-**Uwaga:** ta ścieżka nie jest zweryfikowana — patrz „Znane ograniczenia”
-(adres ogłaszany przez brokera).
+**Uwaga:** w obecnej konfiguracji ta ścieżka nie działa
+(`getaddrinfo ENOTFOUND kafka`) — przyczyna i możliwe poprawki w „Znanych
+ograniczeniach”. Testy uruchamiaj w kontenerze (komenda wyżej).
 
 ```bash
 cd tests
@@ -179,6 +180,12 @@ poprzednich uruchomień, pojedynczym testem (`-t`) i w losowej kolejności
   osobno w `producer`, `consumer` i helperach; zmiana formatu w `consumer`
   nie zepsuje kompilacji testów (rozwiązanie: wspólny pakiet typów / schema
   registry).
-- Uruchomienie testów z hosta (`localhost:9092`) nie jest zweryfikowane: broker
-  ogłasza adres `kafka:9092`, którego host nie rozwiąże bez dodatkowego
-  listenera.
+- **Testy uruchamiane poza Dockerem nie łączą się z Kafką.** Sprawdzone:
+  `KAFKA_BOOTSTRAP_SERVERS=localhost:9092 npm test` kończy się
+  `getaddrinfo ENOTFOUND kafka`. Klient łączy się z `localhost:9092`, ale broker
+  w odpowiedzi ogłasza adres `kafka:9092` (`KAFKA_ADVERTISED_LISTENERS`), a ta
+  nazwa istnieje tylko w sieci Dockera. Poprawka: drugi listener dla hosta
+  (np. `EXTERNAL://localhost:9094` w `KAFKA_LISTENERS` /
+  `KAFKA_ADVERTISED_LISTENERS` + port `9094`) albo wpis `127.0.0.1 kafka`
+  w `/etc/hosts`. Nie zmieniałem konfiguracji — wymagana komenda (w kontenerze)
+  działa.
