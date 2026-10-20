@@ -81,7 +81,8 @@ docker compose --profile test run --build --rm tests
   wersja testów. Przy pierwszym uruchomieniu obraz i tak jest budowany.
 - Przed testami `beforeAll` wysyła zamówienie testowe i czeka na nie na
   `orders-processed` (do 60 s). Zaraz po (re)starcie `consumer`a trwa to
-  ok. 20–25 s — powód w „Znanych ograniczeniach”. Cały zestaw: ~35–40 s.
+  ok. 20–25 s — powód w „Znanych ograniczeniach”. Cały zestaw: ~35–40 s
+  z `--build` (odtwarza też kontener `consumer`), ~16 s bez przebudowy.
 
 ### Zmiany w `kafkaHelpers.ts`
 
@@ -110,9 +111,8 @@ kluczem kolejnego zamówienia i sprawdzają, że zamówienie zostaje przetworzon
 **Crash `consumer`a był niewidoczny** (`logLevel.NOTHING`, brak obsługi), a
 proces po nim działał dalej, nic nie przetwarzając. Listener `CRASH` loguje
 teraz każdy crash, a gdy kafkajs nie planuje restartu (tak było przy payloadzie
-`null`), kończy
-proces kodem 1, żeby Docker (`restart: unless-stopped`) uruchomił
-`consumer`a ponownie. Ta ścieżka nie jest pokryta testem E2E (po fixie żadna
+`null`), kończy proces kodem 1, żeby Docker (`restart: unless-stopped`)
+uruchomił `consumer`a ponownie. Ta ścieżka nie jest pokryta testem E2E (po fixie żadna
 znana wiadomość nie powoduje crashu), ale została potwierdzona ręcznie: z
 wyłączonym `isJsonObject` wiadomość `null` daje w logu
 `Crash konsumenta (restart: false)`, a kontener jest restartowany z rosnącym
@@ -144,7 +144,7 @@ poprzednich uruchomień, pojedynczym testem (`-t`) i w losowej kolejności
 - **Wolny start po restarcie `consumer`a (~20–25 s).** `consumer.ts` nie
   obsługuje `SIGTERM`, więc zatrzymana instancja nie opuszcza consumer group;
   rebalance czeka na jej session timeout i przez ten czas partycje `orders`
-  nie mają właściciela. Testy są na to odporne (readiness check), ale
+  są nadal przypisane do martwej instancji — nikt ich nie przetwarza. Testy są na to odporne (readiness check), ale
   przyczynę warto naprawić w `consumer` (graceful shutdown) — na produkcji
   oznacza to przestój przy każdym deployu.
 - **Koszt helperów rośnie z danymi.** Każde wywołanie tworzy nową consumer
@@ -154,8 +154,8 @@ poprzednich uruchomień, pojedynczym testem (`-t`) i w losowej kolejności
   wyniku == `orderId`. `collectMessages` nie wykrywa duplikatów — „dokładnie
   raz” nie jest sprawdzane.
 - **Timeout helpera to `null`, nie błąd.** Gdy `waitForMessage` nic nie
-  znajdzie, test kończy się komunikatem `expected not null`, bez informacji, na
-  który topic i jak długo czekał. Lepiej: helper rzuca błąd z nazwą topicu i
+  znajdzie, zwraca `null` i test kończy się porównaniem z `null`
+  (`Received: null`), bez informacji, na który topic i jak długo czekał. Lepiej: helper rzuca błąd z nazwą topicu i
   limitem czasu. Przy okazji warto wydzielić wspólną pętlę `waitForMessage` /
   `collectMessages` — dziś to prawie ten sam kod skopiowany dwa razy.
 - **Szum w logach testów.** kafkajs loguje na poziomie INFO start, join grupy
@@ -168,7 +168,7 @@ poprzednich uruchomień, pojedynczym testem (`-t`) i w losowej kolejności
   przestoju, bez logów), a po restarcie ta sama wiadomość wywoła go znowu.
   Lepiej: łapać błędy per wiadomość i włączyć logi kafkajs na poziomie `WARN`.
 - **Treść DLQ dla payloadów `null` / liczba / boolean nie jest asertowana.** Nie ma
-  w nim unikalnego znacznika, a helpery nie zwracają klucza, więc testy
+  w nich unikalnego znacznika, a helpery nie zwracają klucza, więc testy
   sprawdzają tylko, że kolejne zamówienie przechodzi. Treść DLQ jest
   sprawdzana dla stringa i tablicy.
 - **Luźna walidacja w `consumer`:** typ `customer` nie jest sprawdzany,
